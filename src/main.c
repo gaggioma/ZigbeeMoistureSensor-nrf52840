@@ -81,6 +81,10 @@ static struct k_work timer_callback_work_battery;
 static struct k_timer timer_interrupt_moisture;
 static struct k_work timer_callback_work_moisture;
 
+//timer callback reboot. ONLY FOR TESTING
+static struct k_timer timer_interrupt_reboot;
+static struct k_work timer_callback_work_reboot;
+
 //prototypes for helpers
 static int set_active_gpio(const struct gpio_dt_spec* gpio);
 static int set_inactive_gpio(const struct gpio_dt_spec* gpio);
@@ -464,15 +468,15 @@ static void identify_cb(zb_bufid_t bufid)
 	LOG_INF("identify_cb bufid: %u", bufid);
 
 	if (bufid) {
-		/* Schedule a self-scheduling function that will toggle the LED. */
+		//Schedule a self-scheduling function that will toggle the LED.
 		ZB_SCHEDULE_APP_CALLBACK(toggle_identify_led, bufid);
 		LOG_INF("Schedule a self-scheduling ep_id: %u", bufid);
 	} else {
-		/* Cancel the toggling function alarm and turn off LED. */
+		//Cancel the toggling function alarm and turn off LED.
 		zb_err_code = ZB_SCHEDULE_APP_ALARM_CANCEL(toggle_identify_led, ZB_ALARM_ANY_PARAM);
 		ZVUNUSED(zb_err_code);
 
-		/* Update network status/idenitfication LED. */
+		//Update network status/idenitfication LED.
 		if (ZB_JOINED()) {
 			LOG_INF("Joined ep_id: %u", bufid);
 			set_inactive_gpio(&led_green);
@@ -481,9 +485,8 @@ static void identify_cb(zb_bufid_t bufid)
 		} else {
 			LOG_INF("Not joined ep_id: %u", bufid);
 			set_inactive_gpio(&led_green);
-			set_active_gpio(&led_red);
-			set_inactive_gpio(&led_blue);			
-
+			set_active_gpio(&led_red); //Red led ON
+			set_inactive_gpio(&led_blue);
 		}
 	}
 }
@@ -551,8 +554,10 @@ void zboss_signal_handler(zb_bufid_t bufid)
 				LOG_INF("ZB_BDB_SIGNAL_DEVICE_REBOOT OK");
 				set_inactive_gpio(&led_red);
             } else {
-                // Initial startup network join failed
+                // Initial startup network join failed. 
+				//See https://ncsdoc.z6.web.core.windows.net/zboss-r23/4.2.2.4/group__zboss__bdb__comm__start.html#ga0b54e93a19cadc5fc02df8eab18ecd45
 				set_active_gpio(&led_red);
+				bdb_start_top_level_commissioning(ZB_BDB_NETWORK_STEERING);
             }
             break;
 
@@ -562,15 +567,17 @@ void zboss_signal_handler(zb_bufid_t bufid)
 				LOG_INF("ZB_BDB_SIGNAL_STEERING OK");
 				set_inactive_gpio(&led_red);
             } else {
-                // Rejoin failed
+                // Rejoin failed led
 				set_active_gpio(&led_red);
+				//restart steering after a while
+				k_sleep(K_SECONDS(10));
+				bdb_start_top_level_commissioning(ZB_BDB_NETWORK_STEERING);
             }
             break;
 
         case ZB_ZDO_SIGNAL_LEAVE:
             // Device has left the network
 			//Try a rejoin procedure
-			//sys_reboot(SYS_REBOOT_WARM);
 			LOG_INF("ZB_ZDO_SIGNAL_LEAVE OK");
 			bdb_start_top_level_commissioning(ZB_BDB_NETWORK_STEERING);
             break;
@@ -791,13 +798,39 @@ void moisture_timer_callback_init(){
 }
 ///////End moisture timer////
 
+/////Start rejoin timer only for test//////
+void reboot_callback(struct k_timer *timer_id)
+{
+	k_work_submit(&timer_callback_work_reboot);
+}
+
+//This execute the routine
+void reboot_callback_work_handler(struct k_work *work){
+	LOG_INF("timer wake up for reboot");
+	k_sleep(K_SECONDS(5));
+	//reboot
+	bdb_start_top_level_commissioning(ZB_BDB_NETWORK_STEERING);
+	//sys_reboot(SYS_REBOOT_WARM);
+}
+
+void reboot_timer_callback_init(){
+	//This allow execution of routine into callback context (gpio or timer)
+	k_work_init(&timer_callback_work_reboot, reboot_callback_work_handler);
+
+	//Timer init
+	k_timer_init(&timer_interrupt_reboot, reboot_callback, NULL);
+	//it means that timer expires first time after Nsec, after that expires every Nsec
+	k_timer_start(&timer_interrupt_reboot, K_SECONDS(30), K_SECONDS(30)); 
+}
+/////End rejoin timer only for test///////
+
 int main(void)
 {
 	LOG_INF("Starting Zigbee application template example");
 
 	//Reset led.
 	configure_gpio_out(&led_blue);
-	set_inactive_gpio(&led_blue);
+	set_active_gpio(&led_blue);
 	configure_gpio_out(&led_green);
 	set_inactive_gpio(&led_green);
 	configure_gpio_out(&led_red);
@@ -859,6 +892,9 @@ int main(void)
 			//Read and report state for the first time
 			measureSensor("battery"); //Battery
 			measureSensor("moisture"); //Moisture
+
+			//Rejoin test
+			//reboot_timer_callback_init();
 
 			k_sleep(K_FOREVER);
 		}
